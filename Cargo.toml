@@ -1,0 +1,24 @@
+[package]
+name = "refolder"
+version = "0.1.0"
+edition = "2024"
+authors = ["Trent Zeng <trentzz.dev@gmail.com>"]
+description = "A CLI tool that redistributes files matching a pattern into evenly sized subfolders."
+license = "MIT"
+repository = "https://github.com/trentzz/refolder"
+readme = "README.md"
+keywords = ["cli", "files", "organization", "folders", "utility"]
+categories = ["command-line-utilities"]
+homepage = "https://github.com/trentzz/refolder"
+
+[dependencies]
+anyhow = "1.0.100"
+clap = { version = "4.5.50", features = ["derive"] }
+globwalk = "0.9.1"
+
+[dev-dependencies]
+tempfile = "3.23.0"
+
+[[bin]]
+name = "refolder"
+path = "src/main.rs"
