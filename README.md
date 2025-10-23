@@ -7,30 +7,29 @@
 You can install from a git repo with:
 
 ```bash
-cargo install --git https://github.com/trentzz/refolder.git --bin refolder
+cargo install --git https://github.com/trentzz/refolder.git
 ```
 
 ## Usage
 
 ```text
+A CLI tool that redistributes files matching a pattern into evenly sized subfolders.
 
-USAGE:
-    refolder <path> [OPTIONS]
+Usage: refolder [OPTIONS] --subfolders <SUBFOLDERS> <PATH>
 
+Arguments:
+  <PATH>  Path to the directory to search
 
-ARGS:
-    <path>    Directory to search
-
-
-OPTIONS:
-    -m, --matching <PATTERN>    Glob pattern for files (default: "*")
-    -s, --subfolders <N>       Number of target subfolders (required)
-    -p, --prefix <PREFIX>      Prefix for subfolders (default: "group")
-    --suffix <SUFFIX>          Suffix format: numbers | letters | none (default: numbers)
-    -r, --recursive            Recurse into subdirectories
-    --dry-run                  Show what would be done without moving files
-    -f, --force                Overwrite existing destination folders/files if necessary
-    -h, --help                 Print help
+Options:
+  -m, --matching <MATCHING>      Glob pattern for matching files (shell-style). Default: "*" [default: *]
+  -s, --subfolders <SUBFOLDERS>  Number of subfolders to split into
+  -p, --prefix <PREFIX>          Prefix for created subfolders. Default: "group" [default: group]
+      --suffix <SUFFIX>          Suffix style: numbers | letters | none [default: numbers]
+  -r, --recursive                Recurse into subdirectories
+      --dry-run                  Print actions without performing them
+  -f, --force                    Overwrite existing files/folders in destination
+  -h, --help                     Print help
+  -V, --version                  Print version
 ```
 
 ### Safety
