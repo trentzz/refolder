@@ -10,7 +10,17 @@ You can install from a git repo with:
 cargo install --git https://github.com/trentzz/refolder.git
 ```
 
+Or once published:
+
+```bash
+cargo install refolder
+```
+
 ## Usage
+
+```bash
+refolder "/path/to/files" --matching "*.txt" --subfolders 3 --prefix "example"
+```
 
 ```text
 A CLI tool that redistributes files matching a pattern into evenly sized subfolders.
@@ -32,34 +42,68 @@ Options:
   -V, --version                  Print version
 ```
 
-### Safety
+> [!NOTE]
+> `--force` will overwrite files in destination if necessary. Without `--force`, existing destination files cause an error.
 
-A dry run is available for verification.
+## Examples
 
-Dry run:
-
-```bash
-refolder . -m "*.log" -s 2 --dry-run
-```
-
-`--force` will overwrite files in destination if necessary. Without `--force`, existing destination files cause an error.
-
-## Example
+### Simple usage
 
 ```bash
-refolder /path/to --matching "*.txt" --subfolders 4 --prefix example --suffix numbers --recursive
+refolder "/path/to/files" --matching "*.txt" --subfolders 4 --prefix "example"
 ```
 
 Resulting folders will be:
 
 ```text
-/path/to/example-1
-/path/to/example-2
-/path/to/example-3
-/path/to/example-4
+.
+├── example-1
+│   ├── file10.txt
+│   ├── file11.txt
+│   └── file1.txt
+├── example-2
+│   ├── file12.txt
+│   ├── file2.txt
+│   └── file3.txt
+├── example-3
+│   ├── file4.txt
+│   ├── file5.txt
+│   └── file6.txt
+└── example-4
+    ├── file7.txt
+    ├── file8.txt
+    └── file9.txt
 ```
 
 Files will be distributed as evenly as possible.
+
+### Dry run
+
+```bash
+$ refolder . --matching '*.txt' --prefix example --subfolders 4 --recursive --suffix letters --dry-run`
+.
+├── example-a
+│   ├── file1.txt
+│   ├── file10.txt
+│   └── file11.txt
+├── example-b
+│   ├── file12.txt
+│   ├── file2.txt
+│   └── file3.txt
+├── example-c
+│   ├── file4.txt
+│   ├── file5.txt
+│   └── file6.txt
+└── example-d
+    ├── file7.txt
+    ├── file8.txt
+    └── file9.txt
+
+Summary:
+  Total folders: 4
+  Total files:   12
+  Mode:          dry-run (no changes made)
+```
 
 ## Behavior notes
 
@@ -68,33 +112,3 @@ If files are already in subfolders that match the prefix and one of the -i indic
 The distribution ensures the number of files in any two target folders differ by at most 1.
 
 Moves are attempted with fs::rename and will fall back to copy-and-remove if rename fails (e.g. across filesystems).
-
-## More Examples
-
-Split *.jpg files into 3 folders with prefix photos and numeric suffixes:
-
-```bash
-refolder . -m "*.jpg" -s 3 -p photos --suffix numbers -r
-```
-
-Dry run output
-
-```bash
-refolder . --matching '*.txt' --prefix simple --dry-run --subfolders 4`
-Would create folder: ./simple-1
-Would move: ./file1.txt -> ./simple-1/file1.txt
-Would move: ./file10.txt -> ./simple-1/file10.txt
-Would move: ./file11.txt -> ./simple-1/file11.txt
-Would create folder: ./simple-2
-Would move: ./file12.txt -> ./simple-2/file12.txt
-Would move: ./file2.txt -> ./simple-2/file2.txt
-Would move: ./file3.txt -> ./simple-2/file3.txt
-Would create folder: ./simple-3
-Would move: ./file4.txt -> ./simple-3/file4.txt
-Would move: ./file5.txt -> ./simple-3/file5.txt
-Would move: ./file6.txt -> ./simple-3/file6.txt
-Would create folder: ./simple-4
-Would move: ./file7.txt -> ./simple-4/file7.txt
-Would move: ./file8.txt -> ./simple-4/file8.txt
-Would move: ./file9.txt -> ./simple-4/file9.txt
-```

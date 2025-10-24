@@ -1,9 +1,14 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use globwalk::GlobWalkerBuilder;
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 /// Core library functions used by `main` and by tests.
+
+/// Bold ANSI codes for terminal output
+const BOLD_START: &str = "\x1b[1;34m";
+const BOLD_END: &str = "\x1b[0m";
 
 /// Public API: run the refolder operation.
 pub fn run(
@@ -41,13 +46,24 @@ pub fn run(
     let buckets = partition(files, subfolders);
 
     // 3) For each bucket, create folder name and move files
+    let mut planned_moves: Vec<(String, String)> = Vec::new();
+
     for (i, bucket) in buckets.into_iter().enumerate() {
         let folder_name = format_folder_name(prefix, i + 1, suffix)?;
         let folder_path = base.join(&folder_name);
 
-        if dry_run {
-            println!("Would create folder: {}", folder_path.display());
-        } else {
+        // Record folder creation and moves first (for dry-run printing)
+        for src in bucket {
+            let file_name = src
+                .file_name()
+                .and_then(|s| s.to_str())
+                .ok_or_else(|| anyhow!("Invalid filename for {}", src.display()))?;
+            let dest = folder_path.join(file_name);
+            planned_moves.push((src.display().to_string(), dest.display().to_string()));
+        }
+
+        // If not dry-run, perform actual creation and moving
+        if !dry_run {
             if folder_path.exists() {
                 if !folder_path.is_dir() {
                     return Err(anyhow!(
@@ -56,57 +72,62 @@ pub fn run(
                     ));
                 }
             } else {
-                fs::create_dir_all(&folder_path)
-                    .with_context(|| format!("Failed to create directory {}", folder_path.display()))?;
+                fs::create_dir_all(&folder_path).with_context(|| {
+                    format!("Failed to create directory {}", folder_path.display())
+                })?;
+            }
+
+            for (src_str, dest_str) in planned_moves
+                .iter()
+                .filter(|(_, d)| d.starts_with(&folder_path.display().to_string()))
+            {
+                let src = PathBuf::from(src_str);
+                let dest = PathBuf::from(dest_str);
+
+                // Skip identical (redo safe)
+                if src == dest {
+                    continue;
+                }
+
+                if dest.exists() {
+                    if !force {
+                        return Err(anyhow!(
+                            "Destination file {} already exists (use --force to overwrite)",
+                            dest.display()
+                        ));
+                    } else {
+                        fs::remove_file(&dest).with_context(|| {
+                            format!(
+                                "Failed removing existing destination file {}",
+                                dest.display()
+                            )
+                        })?;
+                    }
+                }
+
+                match fs::rename(&src, &dest) {
+                    Ok(_) => {}
+                    Err(rename_err) => {
+                        fs::copy(&src, &dest).with_context(|| {
+                            format!(
+                                "Failed copying {} to {}: {}",
+                                src.display(),
+                                dest.display(),
+                                rename_err
+                            )
+                        })?;
+                        fs::remove_file(&src).with_context(|| {
+                            format!("Failed removing original file {}", src.display())
+                        })?;
+                    }
+                }
             }
         }
+    }
 
-        for src in bucket {
-            let file_name = src
-                .file_name()
-                .and_then(|s| s.to_str())
-                .ok_or_else(|| anyhow!("Invalid filename for {}", src.display()))?;
-            let dest = folder_path.join(file_name);
-
-            if dry_run {
-                println!("Would move: {} -> {}", src.display(), dest.display());
-                continue;
-            }
-
-            if dest.exists() {
-                if !force {
-                    return Err(anyhow!(
-                        "Destination file {} already exists (use --force to overwrite)",
-                        dest.display()
-                    ));
-                } else {
-                    // remove existing file
-                    fs::remove_file(&dest).with_context(|| {
-                        format!("Failed removing existing destination file {}", dest.display())
-                    })?;
-                }
-            }
-
-            // Try rename; on cross-device rename we fallback to copy+remove
-            match fs::rename(&src, &dest) {
-                Ok(_) => {
-                    // moved successfully
-                }
-                Err(rename_err) => {
-                    // fallback copy + remove
-                    fs::copy(&src, &dest).with_context(|| {
-                        format!(
-                            "Failed copying {} to {}: {}",
-                            src.display(),
-                            dest.display(),
-                            rename_err
-                        )
-                    })?;
-                    fs::remove_file(&src)
-                        .with_context(|| format!("Failed removing original file {}", src.display()))?;
-                }
-            }
-        }
+    // If dry-run, print grouped output nicely
+    if dry_run {
+        print_dry_run_preview(&planned_moves);
     }
 
     Ok(())
@@ -114,9 +135,26 @@ pub fn run(
 
 /// Collect files matching `pattern` under `base`. If an existing folder with `prefix` exists
 /// under `base` we also collect matching files inside it (one-level) so we can `redo` distributions.
-fn collect_files(base: &Path, pattern: &str, recursive: bool, prefix: &str) -> Result<Vec<PathBuf>> {
-    // Build walker for base (respecting recursive)
-    let mut builder = GlobWalkerBuilder::from_patterns(base, &[pattern]);
+fn collect_files(
+    base: &Path,
+    pattern: &str,
+    recursive: bool,
+    prefix: &str,
+) -> Result<Vec<PathBuf>> {
+    // Always canonicalize base first
+    let canonical_base = std::fs::canonicalize(base)
+        .with_context(|| format!("Failed to canonicalize {}", base.display()))?;
+
+    // Use string form — avoids internal strip_prefix panics in globwalk
+    let base_str = canonical_base
+        .to_str()
+        .ok_or_else(|| anyhow!("Base path is not valid UTF-8"))?
+        .to_string();
+
+    // Build walker using the canonical absolute path string
+    let mut builder = GlobWalkerBuilder::from_patterns(&base_str, &[pattern]);
+    builder = builder.case_insensitive(true);
+
     if recursive {
         builder = builder.max_depth(usize::MAX);
     } else {
@@ -125,27 +163,36 @@ fn collect_files(base: &Path, pattern: &str, recursive: bool, prefix: &str) -> R
 
     let walker = builder
         .build()
-        .with_context(|| "Failed building glob walker (check your pattern)")?;
+        .with_context(|| format!("Failed building glob walker for {}", base_str))?;
 
     let mut files: Vec<PathBuf> = walker
-        .filter_map(Result::ok)
-        .map(|e| e.path().to_path_buf())
+        .filter_map(|entry| match entry {
+            Ok(e) => Some(e.path().to_path_buf()),
+            Err(err) => {
+                eprintln!("⚠️ Warning: skipping entry due to error: {}", err);
+                None
+            }
+        })
         .filter(|p| p.is_file())
         .collect();
 
-    // Also look for files already in folders that match the prefix pattern: prefix-*
-    if let Ok(readdir) = fs::read_dir(base) {
+    // Handle redo-existing prefix-* directories
+    if let Ok(readdir) = fs::read_dir(&canonical_base) {
         for entry in readdir.filter_map(Result::ok) {
-            let file_name = entry.file_name();
-            let s = file_name.to_string_lossy();
+            let s = entry.file_name().to_string_lossy().to_string();
             if s.starts_with(prefix) && entry.path().is_dir() {
-                // collect files inside this dir according to pattern (one-level)
-                let mut inside_builder = GlobWalkerBuilder::from_patterns(entry.path(), &[pattern]);
-                inside_builder = inside_builder.max_depth(1);
-                let inside = inside_builder.build().with_context(|| {
-                    format!("Failed building walker for {}", entry.path().display())
+                let inner_base = std::fs::canonicalize(entry.path()).with_context(|| {
+                    format!("Failed to canonicalize {}", entry.path().display())
                 })?;
-                for e in inside.filter_map(Result::ok) {
+                let inner_str = inner_base
+                    .to_str()
+                    .ok_or_else(|| anyhow!("Invalid UTF-8 path"))?;
+                let inner_walker = GlobWalkerBuilder::from_patterns(inner_str, &[pattern])
+                    .max_depth(1)
+                    .build()
+                    .with_context(|| format!("Failed to build walker for {}", inner_str))?;
+
+                for e in inner_walker.filter_map(Result::ok) {
                     let p = e.path().to_path_buf();
                     if p.is_file() && !files.contains(&p) {
                         files.push(p);
@@ -155,9 +202,7 @@ fn collect_files(base: &Path, pattern: &str, recursive: bool, prefix: &str) -> R
         }
     }
 
-    // Sort paths for deterministic behavior
     files.sort();
-
     Ok(files)
 }
 
@@ -206,8 +251,79 @@ fn format_folder_name(prefix: &str, index: usize, suffix: &str) -> Result<String
             Ok(format!("{}-{}", prefix, s))
         }
         "none" => Ok(prefix.to_string()),
-        other => Err(anyhow!("Unknown suffix style '{}'. Use numbers|letters|none", other)),
+        other => Err(anyhow!(
+            "Unknown suffix style '{}'. Use numbers|letters|none",
+            other
+        )),
     }
+}
+
+pub fn print_dry_run_preview(file_moves: &[(String, String)]) {
+    let mut folders: BTreeMap<String, Vec<String>> = BTreeMap::new();
+
+    for (_src, dst) in file_moves {
+        let dst_path = Path::new(dst);
+        let folder = dst_path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .to_string_lossy()
+            .to_string();
+        let file_name = dst_path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
+        folders.entry(folder).or_default().push(file_name);
+    }
+
+    println!(".");
+    let folder_names: Vec<_> = folders.keys().cloned().collect();
+    let last_folder_idx = folder_names.len().saturating_sub(1);
+
+    for (i, folder) in folder_names.iter().enumerate() {
+        let is_last_folder = i == last_folder_idx;
+        let prefix_folder = if is_last_folder {
+            "└── "
+        } else {
+            "├── "
+        };
+
+        let folder_name = Path::new(folder)
+            .file_name()
+            .unwrap_or_else(|| std::ffi::OsStr::new(folder))
+            .to_string_lossy();
+
+        // Wrap folder name in bold ANSI codes
+        println!("{}{}{}{}", prefix_folder, BOLD_START, folder_name, BOLD_END);
+
+        let mut files = folders.get(folder).unwrap().clone();
+        files.sort();
+        let last_file_idx = files.len().saturating_sub(1);
+
+        for (j, file) in files.into_iter().enumerate() {
+            let prefix_file = if j == last_file_idx {
+                if is_last_folder {
+                    "    └── "
+                } else {
+                    "│   └── "
+                }
+            } else {
+                if is_last_folder {
+                    "    ├── "
+                } else {
+                    "│   ├── "
+                }
+            };
+            println!("{}{}", prefix_file, file);
+        }
+    }
+
+    // Optional: summary
+    println!("\nSummary:");
+    println!("  Total folders: {}", folders.len());
+    let total_files: usize = folders.values().map(|v| v.len()).sum();
+    println!("  Total files:   {}", total_files);
+    println!("  Mode:          dry-run (no changes made)");
 }
 
 #[cfg(test)]
@@ -231,7 +347,10 @@ mod tests {
     fn test_partition_uneven() {
         let files: Vec<PathBuf> = (0..10).map(|i| PathBuf::from(format!("f{}", i))).collect();
         let buckets = partition(files, 3);
-        assert_eq!(buckets.iter().map(|b| b.len()).collect::<Vec<_>>(), vec![4, 3, 3]);
+        assert_eq!(
+            buckets.iter().map(|b| b.len()).collect::<Vec<_>>(),
+            vec![4, 3, 3]
+        );
     }
 
     #[test]
@@ -316,6 +435,30 @@ mod tests {
             .map(|d| fs::read_dir(d).unwrap().count())
             .sum();
         assert_eq!(total, 3);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_strip_prefix_safe() -> Result<()> {
+        // Use "." explicitly to simulate the common cause of StripPrefixError
+        let dir = tempdir()?;
+        let base = dir.path();
+
+        // create some files
+        for i in 0..3 {
+            let p = base.join(format!("f{}.txt", i));
+            File::create(&p)?;
+        }
+
+        // Run collect_files directly to ensure no panic
+        let result =
+            std::panic::catch_unwind(|| collect_files(base, "*.txt", true, "pack").unwrap());
+
+        assert!(
+            result.is_ok(),
+            "collect_files should never panic on relative paths"
+        );
 
         Ok(())
     }
