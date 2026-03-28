@@ -174,7 +174,7 @@ pub fn run(config: &Config<'_>) -> Result<()> {
     // treat them as sources as well so we can "redo" distributions. We scan both
     // the source base and the output dir so that a second run picks up previously
     // moved files regardless of where they landed.
-    let mut files = collect_files(base, matching, recursive, prefix, Some(out_dir))?;
+    let mut files = collect_files(base, matching, recursive, prefix, suffix, Some(out_dir))?;
 
     if files.is_empty() {
         println!("No files matched pattern. Nothing to do.");
@@ -195,6 +195,11 @@ pub fn run(config: &Config<'_>) -> Result<()> {
     let mut folders_created: usize = 0;
     let mut folders_used: usize = 0;
     let mut files_moved: usize = 0;
+
+    // Pre-compute the total file count so progress messages can show "x/total".
+    // This counts all files across all buckets before the loop starts.
+    let total_files: usize = buckets.iter().map(|b| b.len()).sum();
+    let mut moved_so_far: usize = 0;
 
     for (i, bucket) in buckets.into_iter().enumerate() {
         let folder_name = format_folder_name(prefix, i + 1, suffix)?;
@@ -271,11 +276,18 @@ pub fn run(config: &Config<'_>) -> Result<()> {
                 }
 
                 files_moved += 1;
+                moved_so_far += 1;
 
                 // Print the relative destination path to stderr when verbose.
                 if verbose {
                     let rel = dest.strip_prefix(out_dir).unwrap_or(dest).to_string_lossy();
                     eprintln!("{}", rel);
+                }
+
+                // Print a progress counter every 10 files and on the final file.
+                // Skip when verbose is on — per-file output already provides feedback.
+                if !verbose && (moved_so_far % 10 == 0 || moved_so_far == total_files) {
+                    eprintln!("Moving files... {}/{}", moved_so_far, total_files);
                 }
             }
         }
@@ -318,12 +330,16 @@ fn pluralise<'a>(count: usize, singular: &'a str, plural: &'a str) -> &'a str {
 /// under `base` or `output_base` we also collect matching files inside it (one level deep) so
 /// we can "redo" distributions.
 ///
+/// `suffix` is the suffix style (`numbers` | `letters` | `none`) used to determine which
+/// existing subdirectory names belong to a previous run.
+///
 /// Returns files in an unspecified order. The caller is responsible for sorting.
 fn collect_files(
     base: &Path,
     pattern: &str,
     recursive: bool,
     prefix: &str,
+    suffix: &str,
     output_base: Option<&Path>,
 ) -> Result<Vec<PathBuf>> {
     // Always canonicalize base first.
@@ -381,31 +397,56 @@ fn collect_files(
     }
 
     for root in redo_roots {
-        collect_redo_files(root, pattern, prefix, &mut files, &mut seen)?;
+        collect_redo_files(root, pattern, prefix, suffix, &mut files, &mut seen)?;
     }
 
     Ok(files)
 }
 
-/// Scan `root` for subdirectories whose names start with `prefix-` (or equal
-/// `prefix` exactly) and add any matching files they contain to `files`.
-/// Uses `seen` to avoid adding the same path twice.
+/// Returns true if `name` is a valid subfolder name for the given `prefix` and
+/// `suffix` style. This prevents a short prefix like `"g"` from matching
+/// unrelated directories such as `"git"`.
+///
+/// - `numbers`: matches `prefix-<positive integer>`
+/// - `letters`: matches `prefix-<one or more lowercase ASCII letters>`
+/// - `none`:    matches exactly `prefix`
+fn is_redo_folder(name: &str, prefix: &str, suffix: &str) -> bool {
+    match suffix {
+        "none" => name == prefix,
+        "numbers" => {
+            let sep = format!("{}-", prefix);
+            name.starts_with(&sep) && name[prefix.len() + 1..].parse::<u64>().is_ok()
+        }
+        "letters" => {
+            let sep = format!("{}-", prefix);
+            name.starts_with(&sep)
+                && !name[prefix.len() + 1..].is_empty()
+                && name[prefix.len() + 1..]
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase())
+        }
+        // Unknown suffix styles: fall back to no match so we do not pick up
+        // unrelated directories.
+        _ => false,
+    }
+}
+
+/// Scan `root` for subdirectories whose names match the exact pattern for the
+/// given `prefix` and `suffix` style, and add any matching files they contain
+/// to `files`. Uses `seen` to avoid adding the same path twice.
 fn collect_redo_files(
     root: &Path,
     pattern: &str,
     prefix: &str,
+    suffix: &str,
     files: &mut Vec<PathBuf>,
     seen: &mut HashSet<PathBuf>,
 ) -> Result<()> {
-    let prefix_sep = format!("{}-", prefix);
-
     match fs::read_dir(root) {
         Ok(readdir) => {
             for entry in readdir.filter_map(Result::ok) {
                 let s = entry.file_name().to_string_lossy().to_string();
-                // Require the separator so that a prefix of "group" does not
-                // accidentally match "grouper" or "groups".
-                if (s.starts_with(&prefix_sep) || s == prefix) && entry.path().is_dir() {
+                if is_redo_folder(&s, prefix, suffix) && entry.path().is_dir() {
                     let inner_base = std::fs::canonicalize(entry.path()).with_context(|| {
                         format!("Failed to canonicalize {}", entry.path().display())
                     })?;
@@ -715,8 +756,9 @@ mod tests {
         }
 
         // Run collect_files directly to ensure no panic.
-        let result =
-            std::panic::catch_unwind(|| collect_files(base, "*.txt", true, "pack", None).unwrap());
+        let result = std::panic::catch_unwind(|| {
+            collect_files(base, "*.txt", true, "pack", "numbers", None).unwrap()
+        });
 
         assert!(
             result.is_ok(),
