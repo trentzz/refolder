@@ -23,7 +23,7 @@ refolder "/path/to/files" --matching "*.txt" --subfolders 3 --prefix "example"
 ```
 
 ```text
-A CLI tool that redistributes files matching a pattern into evenly sized subfolders.
+Move matching files into equally-sized subfolders
 
 Usage: refolder [OPTIONS] --subfolders <SUBFOLDERS> <PATH>
 
@@ -31,19 +31,23 @@ Arguments:
   <PATH>  Path to the directory to search
 
 Options:
-  -m, --matching <MATCHING>      Glob pattern for matching files (shell-style). Default: "*" [default: *]
-  -s, --subfolders <SUBFOLDERS>  Number of subfolders to split into
-  -p, --prefix <PREFIX>          Prefix for created subfolders. Default: "group" [default: group]
-      --suffix <SUFFIX>          Suffix style: numbers | letters | none [default: numbers]
-  -r, --recursive                Recurse into subdirectories
-      --dry-run                  Print actions without performing them
-  -f, --force                    Overwrite existing files/folders in destination
-  -h, --help                     Print help
-  -V, --version                  Print version
+  -m, --matching <MATCHING>        Glob pattern for matching files (shell-style) [default: *]
+  -s, --subfolders <SUBFOLDERS>    Number of subfolders to split into
+  -p, --prefix <PREFIX>            Prefix for created subfolders [default: group]
+      --suffix <SUFFIX>            Suffix style: numbers | letters | none [default: numbers]
+  -o, --output-dir <PATH>          Directory where subfolders are created. Defaults to the source path
+      --sort <MODE>                Sort order before distribution: name | none | size | size-desc [default: name]
+  -r, --recursive                  Recurse into subdirectories
+      --dry-run                    Print actions without performing them
+  -f, --force                      Overwrite existing files/folders in destination
+  -v, --verbose                    Print each file move to stderr as it happens
+      --no-color                   Suppress all ANSI colour codes in output
+  -h, --help                       Print help
+  -V, --version                    Print version
 ```
 
 > [!NOTE]
-> `--force` will overwrite files in destination if necessary. Without `--force`, existing destination files cause an error.
+> `--force` will overwrite files in the destination if necessary. Without `--force`, an existing destination file causes an error.
 
 ## Examples
 
@@ -53,7 +57,7 @@ Options:
 refolder "/path/to/files" --matching "*.txt" --subfolders 4 --prefix "example"
 ```
 
-Resulting folders will be:
+Resulting folders:
 
 ```text
 .
@@ -75,12 +79,12 @@ Resulting folders will be:
     └── file9.txt
 ```
 
-Files will be distributed as evenly as possible.
+Files are distributed as evenly as possible.
 
 ### Dry run
 
 ```bash
-$ refolder . --matching '*.txt' --prefix example --subfolders 4 --recursive --suffix letters --dry-run`
+$ refolder . --matching '*.txt' --prefix example --subfolders 4 --recursive --suffix letters --dry-run
 .
 ├── example-a
 │   ├── file1.txt
@@ -105,10 +109,28 @@ Summary:
   Mode:          dry-run (no changes made)
 ```
 
-## Behavior notes
+### Output to a different directory
 
-If files are already in subfolders that match the prefix and one of the -i indices (e.g. example-1), refolder will treat these as sources and will first collect their files to re-shuffle when re-distributing to a new number of subfolders. This allows "redoing" with a different --subfolders count.
+```bash
+refolder /data/raw --matching "*.csv" --subfolders 3 --output-dir /data/sorted
+```
 
-The distribution ensures the number of files in any two target folders differ by at most 1.
+Subfolders are created inside `/data/sorted` rather than `/data/raw`. The output directory must already exist.
 
-Moves are attempted with fs::rename and will fall back to copy-and-remove if rename fails (e.g. across filesystems).
+### Sorting files before distribution
+
+```bash
+refolder /data/raw --matching "*.bin" --subfolders 4 --sort size
+```
+
+Files are sorted smallest-first before being distributed. Use `size-desc` for largest-first, `name` for alphabetical (the default), or `none` to use filesystem order.
+
+## Behaviour notes
+
+- After a successful run, a summary is printed: e.g. `Moved 42 files into 5 folders (5 created).`
+- Dry-run mode prints the planned folder tree and a summary without moving any files.
+- If files already sit in subfolders that match the prefix and suffix pattern (e.g. `example-1`), refolder treats those as sources and collects their files before redistributing. This lets you re-run with a different `--subfolders` count.
+- The distribution ensures any two target folders differ in file count by at most 1.
+- Moves use `fs::rename` and fall back to copy-and-remove if the source and destination are on different filesystems.
+- Colour output is enabled when stdout is a TTY. Pass `--no-color` or set the `NO_COLOR` environment variable to suppress it.
+- `--suffix none` with `--subfolders` greater than 1 returns an error, since all files would land in a single folder with no way to distinguish them.
